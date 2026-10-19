@@ -59,7 +59,7 @@ Setting `criteria` runs an [Agent as Judge eval](/evals/agent-as-judge/overview)
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
 | `name` | `str` | Required | Case name. Used by the `--name` selector and in results. |
-| `input` | `str` | Required | Input sent to the agent or team. |
+| `input` | `Union[str, Message]` | Required | Input sent to the agent or team. A `Message` attaches images, audio, videos, or files to the turn. See [Media input](#media-input). |
 | `agent` | `Optional[Agent]` | `None` | Agent under test. Set exactly one of `agent` or `team`. |
 | `team` | `Optional[Team]` | `None` | Team under test. |
 | `tags` | `Tuple[str, ...]` | `()` | Labels for `--tag` / `tag=` selection. |
@@ -72,8 +72,97 @@ Setting `criteria` runs an [Agent as Judge eval](/evals/agent-as-judge/overview)
 | `allow_additional_tool_calls` | `bool` | `True` | Whether tool calls beyond the expected ones are allowed. |
 | `setup` | `Optional[Callable]` | `None` | Runs before the case, outside the timeout. Its return value is passed to `teardown`. |
 | `teardown` | `Optional[Callable]` | `None` | Runs once `setup` has completed, on pass, fail, error, or timeout. Receives `(context, result)`. |
+| `session_id` | `Optional[str]` | `None` | Session to run the case in, instead of a generated one. See [Run arguments](#run-arguments). |
+| `user_id` | `Optional[str]` | `None` | User ID passed to the run. |
+| `session_state` | `Optional[Dict[str, Any]]` | `None` | Session state for the run. |
+| `dependencies` | `Optional[Dict[str, Any]]` | `None` | Dependencies for the run. |
+| `metadata` | `Optional[Dict[str, Any]]` | `None` | Metadata passed to the run. |
+| `knowledge_filters` | `Optional[Union[Dict[str, Any], List[FilterExpr]]]` | `None` | Knowledge filters passed to the run. |
 
 `setup` and `teardown` may be sync or async callables. A teardown failure is recorded on the case result instead of being swallowed.
+
+### Run arguments
+
+`session_id`, `user_id`, `session_state`, `dependencies`, `metadata`, and `knowledge_filters` are passed to `agent.arun()` or `team.arun()` for the case's turn. A case that sets none of them runs in a generated session, with the agent or team's own `user_id`, if any, and no state, dependencies, metadata, or filters.
+
+Each run gets its own copy of `session_state` and `dependencies`, so a run that writes into them leaves the `Case` unchanged.
+
+```python
+calendar = {"calendar_id": "cal-1", "timezone": "UTC"}
+
+Case(
+    name="offers_open_slots",
+    agent=agent,
+    input="Hi, I'm Priya. I'd like to book a call. What times do you have?",
+    criteria="Offers Tuesday 10:00 and Wednesday 15:00.",
+    expected_tool_calls=("get_open_slots",),
+    user_id="lead-42",
+    session_state=calendar,
+)
+```
+
+`session_id` runs the case in that session instead of a generated one. The suite never clears the session: cases that share a `session_id` run as consecutive turns of one conversation, in suite order. A session is read back by `user_id`: a turn that passes a different `user_id` does not see the earlier turns. Pass the same `user_id` on every turn, or none.
+
+### Multi-turn cases
+
+Only the case's own input is graded. To check a later turn of a conversation, run the earlier turns from the case's `setup` hook with the same `session_id` and `user_id`, then set the case's `input` to the turn to grade. The agent or team needs a `db` and `add_history_to_context=True` to read the earlier turns back. With a db that outlives the process, delete the session in `teardown` so the next run starts clean.
+
+```python
+from agno.run import RunStatus
+
+booking_session_id = "booking-1"
+
+
+async def run_earlier_turns() -> None:
+    run_output = await agent.arun(
+        "Hi, I'm Priya. I'd like to book a call. What times do you have?",
+        session_id=booking_session_id,
+        user_id="lead-42",
+        session_state={"calendar_id": "cal-1", "timezone": "UTC"},
+    )
+    if run_output.status != RunStatus.completed:
+        raise RuntimeError(f"earlier turn ended with status {run_output.status.value}")
+
+
+async def delete_booking_session(context, result) -> None:
+    await agent.adelete_session(session_id=booking_session_id, user_id="lead-42")
+
+
+Case(
+    name="books_the_chosen_slot",
+    agent=agent,
+    input="Wednesday at 15:00 works for me.",
+    criteria="Confirms that the Wednesday 15:00 call is booked.",
+    expected_tool_calls=("create_appointment",),
+    setup=run_earlier_turns,
+    teardown=delete_booking_session,
+    session_id=booking_session_id,
+    user_id="lead-42",
+)
+```
+
+### Media input
+
+Pass a `Message` as `input` to attach images, audio, videos, or files to the graded turn, by URL or file path.
+
+```python
+from agno.media import Image
+from agno.models.message import Message
+
+Case(
+    name="offers_slots_for_the_pictured_venue",
+    agent=agent,
+    input=Message(
+        role="user",
+        content="I'd like to book a call about a tour of this landmark. Which one is it, and what times do you have?",
+        images=[Image(url="https://upload.wikimedia.org/wikipedia/commons/0/0c/GoldenGateBridge-001.jpg")],
+    ),
+    criteria="Names the Golden Gate Bridge and offers Tuesday 10:00 and Wednesday 15:00.",
+    expected_tool_calls=("get_open_slots",),
+)
+```
+
+The judge receives the text of the `Message` and the response. It does not see the media, the session state, or earlier turns, so `criteria` must name what the response should contain ("Names the Golden Gate Bridge"), not what the media shows. A `Message` with no text leaves the judge grading the response against an empty question.
 
 ### Judge modes
 
@@ -111,7 +200,7 @@ Cases run sequentially on a single event loop. The runner performs no console I/
 An empty selection (for example a mistyped tag) yields `status == "FAIL"`, so a CI gate never passes a run that executed zero cases. A cancelled run aborts the suite; the unrun cases are recorded as failed with `skipped=True` so the payload accounts for every selected case.
 
 <Note>
-With `db=` set, results log to storage through the same path as standalone evals. A failed write logs a warning without failing the case, and a hung write cannot stall a case past its timeout. Each case runs in a dedicated eval session (the payload's `session_id`), so eval traffic stays out of the agent or team's history.
+With `db=` set, results log to storage through the same path as standalone evals. A failed write logs a warning without failing the case, and a hung write cannot stall a case past its timeout. A case without `session_id` runs in a generated eval session (the payload's `session_id`), so eval traffic stays out of the agent or team's history.
 </Note>
 
 ## CLI

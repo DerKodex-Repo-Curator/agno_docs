@@ -17,7 +17,7 @@ A `Case` describes a single input and its checks. It's a frozen dataclass; const
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `name` | `str` | Required | Case name. Used by the `--name` selector and in results. |
-| `input` | `str` | Required | Input sent to the agent or team. |
+| `input` | `Union[str, Message]` | Required | Input sent to the agent or team. A `Message` attaches images, audio, videos, or files to the turn; the judge receives its text. |
 | `agent` | `Optional[Agent]` | `None` | Agent under test. Provide exactly one of `agent` or `team`. |
 | `team` | `Optional[Team]` | `None` | Team under test. Provide exactly one of `agent` or `team`. |
 | `tags` | `Tuple[str, ...]` | `()` | Tags used by the `--tag` selector. |
@@ -30,6 +30,12 @@ A `Case` describes a single input and its checks. It's a frozen dataclass; const
 | `allow_additional_tool_calls` | `bool` | `True` | Allow tool calls outside `expected_tool_calls` (subset matching). |
 | `setup` | `Optional[Callable[[], Any]]` | `None` | Runs before the case, outside the timeout. Its return value is passed to `teardown` as context. Sync callables run in a thread; async callables are awaited. |
 | `teardown` | `Optional[Callable[[Any, CaseResult], Any]]` | `None` | Runs after the case whenever `setup` completed, including on failure, error, and timeout. Receives `(context, result)`. |
+| `session_id` | `Optional[str]` | `None` | Session to run the case in, instead of a generated one. Cases sharing a `session_id` run as consecutive turns. |
+| `user_id` | `Optional[str]` | `None` | User ID passed to the run. |
+| `session_state` | `Optional[Dict[str, Any]]` | `None` | Session state for the run. |
+| `dependencies` | `Optional[Dict[str, Any]]` | `None` | Dependencies for the run. |
+| `metadata` | `Optional[Dict[str, Any]]` | `None` | Metadata passed to the run. |
+| `knowledge_filters` | `Optional[Union[Dict[str, Any], List[FilterExpr]]]` | `None` | Knowledge filters passed to the run. |
 
 ## JudgeMode
 
@@ -81,7 +87,7 @@ The runner performs no console I/O; all presentation flows through the hooks. Ho
 | `tags` | `Tuple[str, ...]` | Case tags. |
 | `agent_id` | `Optional[str]` | Agent ID for an agent case. `None` for a team case. |
 | `team_id` | `Optional[str]` | Team ID for a team case. `None` for an agent case. |
-| `session_id` | `str` | Generated eval session ID linking the case to its stored session and trace. Empty for skipped cases. |
+| `session_id` | `str` | Eval session ID linking the case to its stored session and trace: `Case.session_id` when set, else generated. Empty for skipped cases. |
 | `duration_seconds` | `float` | Wall-clock duration of the case, including setup and teardown. |
 | `judge_passed` | `Optional[bool]` | Judge verdict. `None` when no `criteria` was configured. |
 | `judge_reason` | `Optional[str]` | The judge's stated reason, when available. |

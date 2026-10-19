@@ -8347,7 +8347,8 @@
                     "group": "Suite",
                     "pages": [
                       "examples/evals/suite/suite-basic",
-                      "examples/evals/suite/suite-team-scoring"
+                      "examples/evals/suite/suite-team-scoring",
+                      "examples/evals/suite/suite-session"
                     ]
                   }
                 ]
